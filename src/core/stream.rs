@@ -560,6 +560,18 @@ impl CaptureResult {
     }
 }
 
+/// Read a child pipe up to [`RAW_CAP`] bytes, then keep draining (and discarding)
+/// anything past the cap so the child never blocks writing to a full pipe.
+fn read_capped(mut pipe: impl Read) -> Vec<u8> {
+    let mut buf = Vec::new();
+    (&mut pipe).take(RAW_CAP as u64).read_to_end(&mut buf).ok();
+    if buf.len() as u64 >= RAW_CAP as u64 {
+        eprintln!("[rtk] warning: output exceeds 10 MiB, capture truncated");
+        io::copy(&mut pipe, &mut io::sink()).ok();
+    }
+    buf
+}
+
 pub fn exec_capture(cmd: &mut Command) -> Result<CaptureResult> {
     cmd.stdin(Stdio::null());
     capture(cmd)
@@ -578,9 +590,30 @@ pub fn exec_capture_stdin(cmd: &mut Command) -> Result<CaptureResult> {
 /// announces that on stderr, so callers moving here from a hand-rolled
 /// `.output()` keep the diagnostic instead of losing it. The program name is
 /// used as the label so no call site has to pass one.
+///
+/// Both pipes are read through [`read_capped`] rather than `cmd.output()`, which
+/// has no size limit: a linter/test runner emitting unbounded output (e.g.
+/// `eslint -f json` over a whole monorepo) could OOM the rtk process itself
+/// before any filter got a chance to run.
 fn capture(cmd: &mut Command) -> Result<CaptureResult> {
     let program = cmd.get_program().to_string_lossy().into_owned();
-    let output = cmd.output().context("Failed to execute command")?;
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("Failed to execute command")?;
+    let stdout = child.stdout.take().context("No child stdout handle")?;
+    let stderr = child.stderr.take().context("No child stderr handle")?;
+
+    let stdout_thread = std::thread::spawn(move || read_capped(stdout));
+    let stderr_thread = std::thread::spawn(move || read_capped(stderr));
+    let stdout_bytes = stdout_thread.join().unwrap_or_default();
+    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+
+    let status = child.wait().context("Failed to wait for child")?;
+    let output = std::process::Output {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    };
     let exit_code = super::utils::exit_code_from_output(&output, &program);
     Ok(CaptureResult {
         stdout: super::utils::decode_process_output(&output.stdout),
@@ -948,6 +981,31 @@ pub(crate) mod tests {
         let result = exec_capture(&mut cmd).unwrap();
         assert!(!result.success());
         assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn test_exec_capture_raw_cap_at_10mb() {
+        // A linter/test runner emitting unbounded JSON (e.g. `eslint -f json`
+        // over a whole monorepo) must not OOM the rtk process. Regression
+        // test for the bug where exec_capture used cmd.output() with no cap.
+        // nosemgrep: interpreter-execution
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "dd if=/dev/zero bs=1024 count=11264 2>/dev/null | tr '\\0' 'a' | fold -w 80",
+        ]);
+        let result = exec_capture(&mut cmd).unwrap();
+        assert!(
+            result.stdout.len() <= RAW_CAP + 100,
+            "stdout should be capped at ~10 MiB, got {} bytes",
+            result.stdout.len()
+        );
+        assert!(
+            result.stdout.len() > 1_000_000,
+            "Should have captured significant data before the cap"
+        );
+        // The child must exit cleanly (not hang/block on a full, undrained pipe).
+        assert_eq!(result.exit_code, 0);
     }
 
     #[test]
