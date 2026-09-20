@@ -1,6 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) in this repository.
+
+> **[`AGENTS.md`](AGENTS.md) is the agent-agnostic twin of this file** — same rules, written
+> so Codex/Cursor/Copilot/Gemini get them too, and with the `.claude/rules/` content inlined
+> because only Claude Code auto-loads it. Keep the two in sync; prefer editing AGENTS.md.
 
 ## Project Overview
 
@@ -16,7 +20,7 @@ This is a fork with critical fixes for git argument parsing and modern JavaScrip
 
 **Verify correct installation:**
 ```bash
-rtk --version  # Should show "rtk 0.28.2" (or newer)
+rtk --version  # this project reports 0.42.x (see Cargo.toml for the current version)
 rtk gain       # Should show token savings stats (NOT "command not found")
 ```
 
@@ -167,5 +171,5 @@ When user provides a numbered plan (QW1-QW4, Phase 1-5, sprint tasks, etc.):
 1. **Execute sequentially**: Follow plan order unless explicitly told otherwise
 2. **Commit after each logical step**: One commit per completed phase/task
 3. **Never skip or reorder**: If a step is blocked, report it and ask before proceeding
-4. **Track progress**: Use task list (TaskCreate/TaskUpdate) for plans with 3+ steps
+4. **Track progress**: use the harness task list for plans with 3+ steps
 5. **Validate assumptions**: Before starting, verify all referenced file paths exist and working directory is correct
