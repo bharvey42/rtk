@@ -661,14 +661,15 @@ pub fn shell_command(line: &str) -> Command {
 ///   so shell syntax inside it is intentional — run it through a shell.
 /// - several parts: the invoking shell already did the parsing, and any operator
 ///   it recognized was consumed before rtk was reached — spawn argv directly so
-///   every argument reaches the child verbatim.
+///   every argument reaches the child verbatim, via [`ChildArgExt`] so an
+///   MSYS/Cygwin child on Windows decodes a `"` the way it was meant (#3727).
 pub fn user_command(parts: &[String]) -> Command {
     match parts {
         [] => shell_command(""),
         [single] => shell_command(single),
         [program, args @ ..] => {
             let mut c = resolved_command(program);
-            c.args(args);
+            c.child_args(args);
             c
         }
     }
@@ -1010,6 +1011,20 @@ mod tests {
         let cmd = user_command(&parts);
 
         assert_eq!(args_of(&cmd), vec!["x `y`", "p | q"]);
+    }
+
+    /// The argv route has to encode arguments the way `ChildArgExt` does, or a
+    /// `"` inside one reaches an MSYS child mangled (#3727).
+    #[test]
+    fn user_command_multi_part_encodes_quotes_for_the_child() {
+        let parts = vec!["echo".to_string(), r#""type""#.to_string(), "q".to_string()];
+        let cmd = user_command(&parts);
+
+        if cfg!(windows) {
+            assert_eq!(args_of(&cmd), vec![r#""\"type\"""#, "q"]);
+        } else {
+            assert_eq!(args_of(&cmd), vec![r#""type""#, "q"]);
+        }
     }
 
     /// A single part is a whole command line the user quoted deliberately, so
