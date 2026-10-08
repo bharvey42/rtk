@@ -171,7 +171,19 @@ pub fn shell_command(script: &str, shell: Option<&str>) -> Result<Launch> {
     }
 
     let mut command = resolved_command(program);
-    command.arg(command_flag(program)).child_arg(script);
+    let flag = command_flag(program);
+    // cmd.exe reads its command string by its own rules, not the C runtime's:
+    // it strips the first and last quote and does no backslash processing, so
+    // neither std's escaping nor `child_arg`'s fits. `/S` makes it strip
+    // exactly the outer pair added here, whatever the script holds (#4288).
+    #[cfg(windows)]
+    if flag == "/C" {
+        use std::os::windows::process::CommandExt;
+
+        command.args(["/S", flag]).raw_arg(format!("\"{script}\""));
+        return Ok(Launch::Ready(command));
+    }
+    command.arg(flag).child_arg(script);
     Ok(Launch::Ready(command))
 }
 
@@ -422,13 +434,39 @@ mod tests {
                 "expected the platform shell, got {program}"
             );
             let actual: Vec<_> = command.get_args().collect();
+            assert_eq!(actual, script_args(default_shell(), phrase), "{phrase:?}");
+        }
+    }
+
+    /// The arguments `shell_command` hands `shell` for `script`: cmd.exe gets
+    /// its own quoting on Windows (#4288), every other shell its flag and the
+    /// script as one argument.
+    fn script_args(shell: &str, script: &str) -> Vec<std::ffi::OsString> {
+        let flag = command_flag(shell);
+        if cfg!(windows) && flag == "/C" {
+            vec!["/S".into(), flag.into(), format!("\"{script}\"").into()]
+        } else {
+            vec![flag.into(), script.into()]
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_cmd_script_is_quoted_for_cmd_not_the_c_runtime() {
+        // A leading quoted path and an embedded backslash-quote: the C runtime
+        // escaping would turn both into `\"`, which cmd passes through as-is.
+        let script = r#""C:\dir with spaces\tool.exe" "a b" "C:\folder\""#;
+        for shell in ["cmd", "CMD.EXE"] {
+            let command = ready(shell_command(script, Some(shell)).expect("cmd resolves"));
+            let actual: Vec<_> = command.get_args().collect();
             assert_eq!(
                 actual,
                 [
-                    OsStr::new(command_flag(default_shell())),
-                    OsStr::new(phrase)
+                    OsStr::new("/S"),
+                    OsStr::new("/C"),
+                    OsStr::new(&format!("\"{script}\""))
                 ],
-                "{phrase:?}"
+                "{shell}"
             );
         }
     }

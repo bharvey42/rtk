@@ -571,4 +571,86 @@ mod windows {
                 .contains("rtk-no-such-binary-4c1f: command not found")
         );
     }
+
+    /// Every way a cmd script reaches `shell_command`: the platform default,
+    /// cmd named in either case, and the three filtered wrappers.
+    const CMD_RUNNERS: &[&[&str]] = &[
+        &["run", "-c"],
+        &["run", "--shell", "cmd", "-c"],
+        &["run", "--shell", "CMD.EXE", "-c"],
+        &["err", "--shell", "cmd"],
+        &["test", "--shell", "cmd"],
+        &["summary", "--shell", "cmd"],
+    ];
+
+    fn rtk_in(dir: &std::path::Path) -> Command {
+        let mut command = rtk();
+        command
+            .current_dir(dir)
+            .env("HOME", dir)
+            .env("USERPROFILE", dir)
+            .env("XDG_CONFIG_HOME", dir)
+            .env("RTK_TELEMETRY_DISABLED", "1");
+        command
+    }
+
+    /// cmd strips the first and last quote of its command string, so a script
+    /// that starts with a quoted program path never started (#4288).
+    #[test]
+    fn explicit_cmd_script_accepts_a_quoted_executable_path() {
+        let dir = tempfile::tempdir().expect("create fixture directory");
+        let spaced = dir.path().join("directory with spaces & (parentheses)");
+        std::fs::create_dir(&spaced).expect("create spaced directory");
+        let executable = spaced.join("rtk.exe");
+        std::fs::copy(rtk().get_program(), &executable).expect("copy fixture executable");
+        let script = format!(
+            "\"{}\" --version > \"version output.txt\"",
+            executable.display()
+        );
+
+        for prefix in CMD_RUNNERS {
+            let output = rtk_in(dir.path())
+                .args(*prefix)
+                .arg(&script)
+                .output()
+                .expect("run explicit cmd script");
+
+            assert!(
+                output.status.success(),
+                "{prefix:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result = dir.path().join("version output.txt");
+            let contents = std::fs::read_to_string(&result).expect("read child version");
+            assert!(contents.starts_with("rtk "), "{prefix:?}: {contents:?}");
+            std::fs::remove_file(result).expect("remove checked output");
+        }
+    }
+
+    /// The script's own quotes, a trailing backslash before a quote, `&`,
+    /// redirection and the exit code all reach cmd as written (#4288).
+    #[test]
+    fn explicit_cmd_script_preserves_quotes_redirection_and_exit_code() {
+        let dir = tempfile::tempdir().expect("create fixture directory");
+        let script =
+            r#"echo "a&b">"result file.txt" & echo "C:\folder\">>"result file.txt" & exit /b 7"#;
+
+        for prefix in CMD_RUNNERS {
+            let output = rtk_in(dir.path())
+                .args(*prefix)
+                .arg(script)
+                .output()
+                .expect("run explicit cmd script");
+
+            assert_eq!(output.status.code(), Some(7), "{prefix:?}");
+            let result = dir.path().join("result file.txt");
+            let contents = std::fs::read_to_string(&result).expect("read redirected output");
+            assert_eq!(
+                contents.lines().collect::<Vec<_>>(),
+                ["\"a&b\" ", "\"C:\\folder\\\" "],
+                "{prefix:?}"
+            );
+            std::fs::remove_file(result).expect("remove checked output");
+        }
+    }
 }
