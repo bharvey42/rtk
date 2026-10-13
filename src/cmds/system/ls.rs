@@ -3,6 +3,7 @@
 use super::constants::NOISE_DIRS;
 use crate::core::arg_tokenizer::{self, Attachment, Dialect, Token, TokenKind, ValueSpec};
 use crate::core::args_utils;
+use crate::core::operand_glob;
 use crate::core::runner::{self, RunOptions};
 use crate::core::shell::display_args;
 use crate::core::truncate::CAP_INVENTORY;
@@ -273,12 +274,12 @@ fn build_child_args(tokens: &[Token<'_>], flavor: Flavor) -> Vec<String> {
     }
 
     let before = child_args.len();
-    child_args.extend(
+    child_args.extend(operand_glob::expand_operands(
         tokens
             .iter()
             .filter(|t| t.is_free_positional())
-            .map(|t| t.text.to_string()),
-    );
+            .map(|t| t.text),
+    ));
     if child_args.len() == before {
         child_args.push(".".to_string());
     }
